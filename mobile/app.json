@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Cheffar",
+    "slug": "cheffar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "predictiveBackGestureEnabled": false
+    },
+    "backgroundColor": "#12100e"
+  }
+}
