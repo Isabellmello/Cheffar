@@ -208,6 +208,45 @@ export function seed(): Snapshot {
   };
 }
 
+export interface CompanyInfo {
+  slug: string;
+  name: string;
+  rid: string;
+}
+
+export const DEMO_COMPANIES: CompanyInfo[] = [
+  { slug: "sabor-da-casa", name: "Sabor da Casa", rid: "rest-sabor-da-casa" },
+  { slug: "demo", name: "Casa Demo", rid: "demo-rest-1" },
+  { slug: "burger-demo", name: "Burger Demo", rid: "rest-burger-demo" },
+];
+
+export function companyFromSlug(slug: string): CompanyInfo {
+  const clean = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+  const found = DEMO_COMPANIES.find((c) => c.slug === clean);
+  if (found) return found;
+
+  const name = clean
+    .split("-")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ") || "Restaurante";
+
+  return {
+    slug: clean || "demo",
+    name,
+    rid: `rest-${clean || "demo"}`,
+  };
+}
+
+export function seedFor(slug: string): Snapshot {
+  const info = companyFromSlug(slug);
+  const base = seed();
+  return {
+    ...base,
+    rid: info.rid,
+  };
+}
+
 export const ROLES: Record<Role, { label: string; perms: string[] }> = {
   manager: {
     label: "Gerência",
@@ -303,11 +342,11 @@ export const PERM_LABEL: Record<string, string> = {
 
 export const PAY_METHODS = ["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito"] as const;
 
-export const ST: Record<OrderStatus, [string, "wait" | "ok" | "neutral"]> = {
-  sent: ["Recebido", "wait"],
-  preparing: ["Em preparo", "neutral"],
-  ready: ["Pronto", "wait"],
-  delivered: ["Entregue", "ok"],
+export const ST: Record<OrderStatus, string> = {
+  sent: "Enviado",
+  preparing: "Preparando",
+  ready: "Pronto",
+  delivered: "Entregue",
 };
 
 export const TS: Record<TableStatus, string> = {
@@ -401,9 +440,9 @@ export function cons(s: Snapshot, n: number) {
   return openOrders(s, n).reduce((sum, o) => sum + tot(s, o), 0);
 }
 
-export function paid(s: Snapshot, n: number, sts: PayStatus[] = ["confirmed", "pending"]) {
+export function paid(s: Snapshot, n: number) {
   return s.pays
-    .filter((p) => p.table === n && !p.closed && sts.includes(p.st))
+    .filter((p) => p.table === n && !p.closed && (p.st === "confirmed" || p.st === "pending"))
     .reduce((sum, p) => sum + p.amount, 0);
 }
 

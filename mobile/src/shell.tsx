@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Audit, Caixa, Dash, MenuAdm, Pulse, Stock, Team } from "./office";
 import { Kds, NewOrder, Orders, Tables } from "./floor";
@@ -26,12 +26,21 @@ export function CheffarApp() {
     return () => clearInterval(id);
   }, [hydrated]);
 
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const match = window.location.pathname.match(/\/empresa\/([^/?#]+)/);
+    if (match) {
+      const slug = decodeURIComponent(match[1]);
+      void useCheffar.getState().setCompany(slug);
+    }
+  }, []);
+
   if (!hydrated) {
     return (
       <SafeAreaView style={styles.boot}>
-        <Text style={styles.kicker}>Casa Demo</Text>
-        <Text style={styles.brand}>Cheffar</Text>
-        <Text style={styles.muted}>Abrindo o turno…</Text>
+        <Text style={styles.kicker}>Cheffar</Text>
+        <Text style={styles.brand}>Abrindo o turno…</Text>
       </SafeAreaView>
     );
   }
@@ -44,9 +53,69 @@ export function CheffarApp() {
 }
 
 function Gate() {
+  const companySlug = useCheffar((s) => s.companySlug);
   const user = useCheffar((s) => s.user);
+
+  if (!companySlug) return <CompanySelector />;
   if (!user) return <Login />;
   return <Frame />;
+}
+
+function CompanySelector() {
+  const setCompany = useCheffar((s) => s.setCompany);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const slug = code.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+    if (slug.length < 2) {
+      setError("Informe um código válido (ex.: sabor-da-casa).");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await setCompany(slug);
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.history.pushState({}, "", `/empresa/${slug}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível abrir a empresa.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+        <Text style={styles.kicker}>Cheffar</Text>
+        <Text style={styles.brand}>Qual restaurante?</Text>
+        <Text style={styles.muted}>Informe o código da empresa</Text>
+
+        <View style={styles.form}>
+          <Field label="Código da empresa">
+            <Input
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="sabor-da-casa"
+              value={code}
+              onChangeText={setCode}
+            />
+          </Field>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <Btn tone="primary" onPress={submit} disabled={busy}>
+            {busy ? "Abrindo…" : "Entrar na empresa"}
+          </Btn>
+        </View>
+
+        <Text style={[styles.muted, { marginTop: 24 }]}>
+          Exemplos: sabor-da-casa, demo, burger-demo
+        </Text>
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
 function Login() {
@@ -54,6 +123,7 @@ function Login() {
   const login = useCheffar((s) => s.login);
   const setModal = useCheffar((s) => s.setModal);
   const modal = useCheffar((s) => s.modal);
+  const companyName = useCheffar((s) => s.companyName);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -82,8 +152,10 @@ function Login() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+        <Text style={styles.kicker}>{companyName}</Text>
         <Text style={styles.brand}>Cheffar</Text>
-        <Text style={styles.muted}>Salão, caixa e cozinha no mesmo turno.</Text>
+        <Text style={styles.muted}>Entre com sua conta</Text>
+
         <View style={styles.form}>
           <Field label="E-mail">
             <Input autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
@@ -93,40 +165,37 @@ function Login() {
               <View style={styles.flex}>
                 <Input secureTextEntry={!show} value={password} onChangeText={setPassword} />
               </View>
-              <Pressable accessibilityLabel="Mostrar ou ocultar senha" onPress={() => setShow((v) => !v)} style={styles.eye}>
-                <Text style={styles.eyeText}>{show ? "Ocultar" : "Ver"}</Text>
+              <Pressable style={styles.eye} onPress={() => setShow((v) => !v)}>
+                <Text style={styles.eyeText}>{show ? "Ocultar" : "Mostrar"}</Text>
               </Pressable>
             </View>
           </Field>
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Btn tone="primary" disabled={busy} onPress={() => void submit()}>
+          <Btn tone="primary" onPress={submit} disabled={busy}>
             {busy ? "Entrando…" : "Entrar"}
           </Btn>
+          <Pressable onPress={() => setModal({ k: "forgot" })}>
+            <Text style={styles.link}>Esqueci a senha</Text>
+          </Pressable>
         </View>
-        <Pressable onPress={() => setModal({ k: "forgot" })}>
-          <Text style={styles.link}>Esqueci minha senha</Text>
-        </Pressable>
-        <Text style={styles.kicker}>Entrar como</Text>
-        <Text style={styles.muted}>Qualquer senha com 4 ou mais caracteres. A mesa 3 já espera o caixa.</Text>
-        {users
-          .filter((u) => u.active)
-          .map((person) => (
-            <Pressable
-              key={person.id}
-              onPress={() => {
-                setEmail(person.email);
-                setPassword("demo1234");
-                setError("");
-              }}
-              style={styles.person}
-            >
-              <View>
-                <Text style={styles.strong}>{person.name}</Text>
-                <Text style={styles.muted}>{ROLES[person.role].label}</Text>
-              </View>
-              <Text style={styles.link}>Preencher</Text>
-            </Pressable>
-          ))}
+
+        <Text style={[styles.muted, { marginTop: 28 }]}>Contas de demonstração</Text>
+        {users.map((person) => (
+          <Pressable
+            key={person.id}
+            style={styles.person}
+            onPress={() => {
+              setEmail(person.email);
+              setPassword("1234");
+            }}
+          >
+            <View>
+              <Text style={styles.strong}>{person.name}</Text>
+              <Text style={styles.muted}>{ROLES[person.role].label}</Text>
+            </View>
+            <Text style={styles.link}>Preencher</Text>
+          </Pressable>
+        ))}
       </ScrollView>
       {modal?.k === "forgot" ? <Forgot /> : null}
       <Toasts />
@@ -176,6 +245,7 @@ function Frame() {
   const go = useCheffar((s) => s.go);
   const modal = useCheffar((s) => s.modal);
   const logout = useCheffar((s) => s.logout);
+  const companyName = useCheffar((s) => s.companyName);
   const items = tabsFor(user);
   const primary = primaryFor(user);
   const showMore = items.length > primary.length;
@@ -195,7 +265,9 @@ function Frame() {
           <Text style={styles.strong} numberOfLines={1}>
             {user.name}
           </Text>
-          <Text style={styles.muted}>{ROLES[user.role].label}</Text>
+          <Text style={styles.muted}>
+            {ROLES[user.role].label} · {companyName}
+          </Text>
         </View>
         <Pressable accessibilityLabel="Sair" onPress={logout}>
           <Text style={styles.link}>Sair</Text>
@@ -275,52 +347,65 @@ function More({ extra }: { extra: [TabId, string][] }) {
       <View style={styles.moreBtn}>
         <Btn onPress={resetDemo}>Reiniciar demonstração</Btn>
       </View>
-      <Btn onPress={logout}>Sair</Btn>
-    </Sheet>
-  );
-}
-
-function Review() {
-  const snap = useCheffar();
-  const sendOrder = useCheffar((s) => s.sendOrder);
-  const setModal = useCheffar((s) => s.setModal);
-  const total = snap.cart.reduce((sum, item) => sum + item.q * item.p, 0);
-  return (
-    <Sheet title={`Mesa ${snap.selTable}`} onClose={() => setModal(null)}>
-      {snap.cart.map((item, index) => (
-        <Text key={index} style={styles.body}>
-          {item.q}× {item.name}
-          {item.note ? ` (${item.note})` : ""}
-        </Text>
-      ))}
-      <Text style={styles.total}>{brl(total)}</Text>
-      <View style={styles.two}>
-        <View style={styles.flex}>
-          <Btn onPress={() => setModal(null)}>Voltar</Btn>
-        </View>
-        <View style={styles.flex}>
-          <Btn tone="primary" onPress={sendOrder}>
-            Enviar à cozinha
-          </Btn>
-        </View>
+      <View style={styles.moreBtn}>
+        <Btn onPress={logout}>Sair</Btn>
       </View>
     </Sheet>
   );
 }
 
+function Review() {
+  const setModal = useCheffar((s) => s.setModal);
+  const cart = useCheffar((s) => s.cart);
+  const changeQty = useCheffar((s) => s.changeQty);
+  const setNote = useCheffar((s) => s.setNote);
+  const sendOrder = useCheffar((s) => s.sendOrder);
+  const total = cart.reduce((sum, c) => sum + c.p * c.q, 0);
+  return (
+    <Sheet title="Revisar pedido" onClose={() => setModal(null)}>
+      {cart.map((line, i) => (
+        <View key={i} style={{ marginBottom: 12 }}>
+          <View style={styles.two}>
+            <Text style={[styles.body, styles.flex]}>{line.name}</Text>
+            <Text style={styles.body}>{brl(line.p * line.q)}</Text>
+          </View>
+          <View style={styles.two}>
+            <Btn onPress={() => changeQty(i, -1)}>−</Btn>
+            <Text style={[styles.body, { marginTop: 10 }]}>{line.q}</Text>
+            <Btn onPress={() => changeQty(i, 1)}>+</Btn>
+          </View>
+          <Field label="Observação">
+            <Input value={line.note} onChangeText={(v) => setNote(i, v)} />
+          </Field>
+        </View>
+      ))}
+      <Text style={styles.total}>{brl(total)}</Text>
+      <Btn
+        tone="primary"
+        onPress={() => {
+          sendOrder();
+          setModal(null);
+        }}
+      >
+        Enviar pedido
+      </Btn>
+    </Sheet>
+  );
+}
+
 function Release() {
-  const table = useCheffar((s) => s.selTable);
   const setModal = useCheffar((s) => s.setModal);
   const releaseTable = useCheffar((s) => s.releaseTable);
+  const selTable = useCheffar((s) => s.selTable);
   return (
-    <Sheet title={`Liberar mesa ${table}?`} onClose={() => setModal(null)}>
-      <Text style={styles.muted}>A conta está quitada. A mesa volta a ficar livre e o consumo vai para o histórico.</Text>
+    <Sheet title={`Liberar mesa ${selTable}?`} onClose={() => setModal(null)}>
+      <Text style={styles.body}>Os pedidos e pagamentos desta mesa serão encerrados.</Text>
       <View style={styles.two}>
         <View style={styles.flex}>
           <Btn onPress={() => setModal(null)}>Cancelar</Btn>
         </View>
         <View style={styles.flex}>
-          <Btn tone="danger" onPress={releaseTable}>
+          <Btn tone="primary" onPress={releaseTable}>
             Liberar
           </Btn>
         </View>
@@ -329,9 +414,9 @@ function Release() {
   );
 }
 
-function Sheet({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return (
-    <Modal transparent animationType="slide" onRequestClose={onClose}>
+    <Modal animationType="slide" transparent visible onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
       <View style={styles.sheet}>
         <Text style={styles.sheetTitle}>{title}</Text>

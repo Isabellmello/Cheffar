@@ -3,8 +3,10 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
   can,
+  companyFromSlug,
   firstTab,
   seed,
+  seedFor,
   sleep,
   type CartLine,
   type ModalKind,
@@ -19,6 +21,9 @@ export interface Cheffar extends Snapshot {
   toast: string;
   modal: ModalKind;
   payKey: string;
+  companySlug: string | null;
+  companyName: string;
+  setCompany: (slug: string) => Promise<void>;
   login: (email: string) => Promise<void>;
   logout: () => void;
   go: (tab: TabId) => void;
@@ -69,11 +74,39 @@ export const useCheffar = create<Cheffar>()(
         toast: "",
         modal: null,
         payKey: `${Date.now()}`,
+        companySlug: null,
+        companyName: "Cheffar",
         ping,
         setModal: (modal) => set({ modal }),
         go: (tab) => set({ tab, modal: null }),
         setCat: (cat) => set({ cat }),
         selectTable: (n) => set({ selTable: n }),
+        setCompany: async (slug: string) => {
+          const info = companyFromSlug(slug);
+          const storageName = `cheffar-${info.slug}-v1`;
+
+          useCheffar.persist.setOptions({ name: storageName });
+          await useCheffar.persist.rehydrate();
+
+          const current = get();
+          if (current.rid !== info.rid) {
+            const seeded = seedFor(info.slug);
+            set({
+              ...seeded,
+              companySlug: info.slug,
+              companyName: info.name,
+              user: null,
+              toast: "",
+              modal: null,
+              payKey: `${Date.now()}`,
+            });
+          } else {
+            set({
+              companySlug: info.slug,
+              companyName: info.name,
+            });
+          }
+        },
         logout: () => set({ user: null, cart: [], modal: null, tab: null, toast: "" }),
         login: async (email) => {
           await sleep(400);
@@ -118,78 +151,38 @@ export const useCheffar = create<Cheffar>()(
           })),
         sendOrder: () => {
           const s = get();
-          if (!guard("order:create") || !s.user) return;
-          if (!s.cart.length) {
-            ping("Adicione itens antes de enviar.");
-            return;
-          }
-          const now = Date.now();
+          if (!s.cart.length) return;
+          const n = s.seq + 1;
           const order = {
-            id: `o${s.seq}`,
-            n: s.seq,
+            id: `o${n}`,
+            n,
             table: s.selTable,
-            w: s.user.id,
+            w: s.user?.id || "",
             st: "sent" as const,
-            t0: now,
+            t0: Date.now(),
             items: s.cart.map((c) => ({ name: c.name, q: c.q, note: c.note, mid: c.mid })),
           };
           set({
-            orders: [...s.orders, order],
-            seq: s.seq + 1,
-            tables: s.tables.map((t) =>
-              t.n === s.selTable && t.st === "free" ? { ...t, st: "occ" as const, w: s.user!.id } : t,
-            ),
+            seq: n,
+            orders: [order, ...s.orders],
             cart: [],
-            modal: null,
-            tab: "orders",
-            audit: stamp(s, `Pedido #${order.n} criado (mesa ${order.table})`),
+            tables: s.tables.map((t) => (t.n === s.selTable ? { ...t, st: "occ" as const, w: s.user?.id || null } : t)),
+            audit: stamp(s, `Pedido #${n} enviado (mesa ${s.selTable})`),
           });
-          ping(`Pedido #${order.n} enviado.`);
+          ping(`Pedido #${n} enviado.`);
         },
         requestBill: () => {
-          if (!guard("table:bill")) return;
           const s = get();
-          const table = s.tables.find((t) => t.n === s.selTable);
-          if (!table || table.st === "free") {
-            ping("Esta mesa está livre.");
-            return;
-          }
+          const n = s.selTable;
           set({
-            tables: s.tables.map((t) => (t.n === table.n ? { ...t, st: "bill" as const } : t)),
-            audit: stamp(s, `Conta pedida: mesa ${table.n}`),
+            tables: s.tables.map((t) => (t.n === n ? { ...t, st: "bill" as const } : t)),
+            audit: stamp(s, `Conta solicitada (mesa ${n})`),
           });
-          ping(`Conta da mesa ${table.n} pedida.`);
+          ping("Conta solicitada.");
         },
         askRelease: (n) => {
-          if (!guard("table:release")) return;
-          const s = get();
-          const tableN = n ?? s.selTable;
-          const table = s.tables.find((t) => t.n === tableN);
-          if (!table) return;
-          if (s.orders.some((o) => o.table === tableN && !o.closed && o.st !== "delivered")) {
-            ping("Há pedidos não entregues nesta mesa.");
-            return;
-          }
-          if (table.st === "free") {
-            ping("Esta mesa já está livre.");
-            return;
-          }
-          const open = s.orders.filter((o) => o.table === tableN && !o.closed);
-          const due = open.reduce((sum, o) => {
-            const value = o.items.reduce((line, i) => {
-              const price = s.menu.find((m) => m.id === i.mid)?.p ?? 0;
-              return line + i.q * price;
-            }, 0);
-            return sum + value;
-          }, 0);
-          const got = s.pays
-            .filter((p) => p.table === tableN && !p.closed && p.st === "confirmed")
-            .reduce((sum, p) => sum + p.amount, 0);
-          if (due - got > 0.005) {
-            ping("A conta ainda não foi quitada no Caixa.");
-            return;
-          }
-          set({ selTable: tableN, modal: { k: "rel" } });
+          if (n != null) set({ selTable: n });
+          set({ modal: { k: "rel" } });
         },
         releaseTable: () => {
           const s = get();
@@ -306,35 +299,32 @@ export const useCheffar = create<Cheffar>()(
               `Preço de ${item.name}: ${before.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} → ${price.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
             ),
           }));
+          ping("Preço atualizado.");
         },
         toggleMenu: (id) => {
           if (!guard("menu:edit")) return;
           const item = get().menu.find((m) => m.id === id);
           if (!item) return;
-          const ok = !item.ok;
           set((s) => ({
-            menu: s.menu.map((m) => (m.id === id ? { ...m, ok } : m)),
-            audit: stamp(s, `${item.name}: ${ok ? "disponível" : "indisponível"}`),
+            menu: s.menu.map((m) => (m.id === id ? { ...m, ok: !m.ok } : m)),
+            audit: stamp(s, `${item.name} ${item.ok ? "desativado" : "ativado"}`),
           }));
         },
         adjustStock: (id, dir) => {
           if (!guard("stock:write")) return;
           const item = get().stock.find((x) => x.id === id);
           if (!item) return;
-          if (dir < 0 && item.q < item.step) {
-            ping("Saída maior que o saldo.");
-            return;
-          }
-          const q = +(item.q + dir * item.step).toFixed(2);
+          const next = +(item.q + dir * item.step).toFixed(2);
+          if (next < 0) return;
           set((s) => ({
-            stock: s.stock.map((x) => (x.id === id ? { ...x, q } : x)),
-            audit: stamp(s, `Estoque: ${item.name} ${dir > 0 ? "entrada" : "saída"} ${item.step} ${item.u}`),
+            stock: s.stock.map((x) => (x.id === id ? { ...x, q: next } : x)),
+            audit: stamp(s, `Estoque: ${item.name} ${dir > 0 ? "+" : "−"}${item.step} ${item.u}`),
           }));
         },
         saveCfg: (prep, wait) => {
           if (!guard("cfg:write")) return;
-          if (!(prep > 0 && wait > 0)) {
-            ping("Use valores maiores que zero.");
+          if (!(prep > 0) || !(wait > 0)) {
+            ping("Informe tempos válidos.");
             return;
           }
           set((s) => ({
@@ -346,11 +336,10 @@ export const useCheffar = create<Cheffar>()(
         toggleUser: (id) => {
           if (!guard("users:write")) return;
           const person = get().users.find((u) => u.id === id);
-          if (!person || person.id === get().user?.id) return;
-          const active = !person.active;
+          if (!person) return;
           set((s) => ({
-            users: s.users.map((u) => (u.id === id ? { ...u, active } : u)),
-            audit: stamp(s, `${person.name}: conta ${active ? "ativada" : "desativada"}`),
+            users: s.users.map((u) => (u.id === id ? { ...u, active: !u.active } : u)),
+            audit: stamp(s, `${person.name} ${person.active ? "desativado" : "ativado"}`),
           }));
         },
         invite: (name, email, role, perms) => {
@@ -394,10 +383,13 @@ export const useCheffar = create<Cheffar>()(
         },
         resetDemo: () => {
           const email = get().user?.email;
-          const next = seed();
+          const slug = get().companySlug ?? "demo";
+          const next = seedFor(slug);
           const user = next.users.find((u) => u.email === email) ?? null;
           set({
             ...next,
+            companySlug: slug,
+            companyName: get().companyName,
             user,
             tab: user ? firstTab(user) : null,
             toast: "",
@@ -429,6 +421,8 @@ export const useCheffar = create<Cheffar>()(
         pays: s.pays,
         audit: s.audit,
         payKey: s.payKey,
+        companySlug: s.companySlug,
+        companyName: s.companyName,
       }),
     },
   ),
