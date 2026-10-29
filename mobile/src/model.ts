@@ -155,7 +155,7 @@ export function seed(): Snapshot {
     stock: [
       { id: "s1", name: "Pão brioche", q: 40, min: 20, u: "un", step: 10 },
       { id: "s2", name: "Carne 150 g", q: 18, min: 15, u: "un", step: 10 },
-      { id: "s3", name: "Queijo muçarela", q: 2, min: 5, u: "kg", step: 2 },
+      { id: "s3", name: "Queijo muçarela", q: 0, min: 5, u: "kg", step: 2 },
       { id: "s4", name: "Refrigerante lata", q: 30, min: 12, u: "un", step: 12 },
     ],
     menu: [
@@ -214,6 +214,63 @@ export interface CompanyInfo {
   rid: string;
 }
 
+export interface RegisteredCompany {
+  slug: string;
+  name: string;
+  legalName: string;
+  cnpj: string;
+  phone: string;
+  zip: string;
+  street: string;
+  number: string;
+  district: string;
+  city: string;
+  state: string;
+  ownerName: string;
+  ownerEmail: string;
+}
+
+export function onlyDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+export function formatCnpj(value: string) {
+  const d = onlyDigits(value).slice(0, 14);
+  return d
+    .replace(/^(\d{2})(\d)/, "$1.$2")
+    .replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2.$3")
+    .replace(/\.(\d{3})(\d)/, ".$1/$2")
+    .replace(/(\d{4})(\d)/, "$1-$2");
+}
+
+export function cnpjOk(value: string) {
+  const c = onlyDigits(value);
+  if (c.length !== 14 || /^(\d)\1+$/.test(c)) return false;
+  const digit = (len: number) => {
+    let sum = 0;
+    let pos = len - 7;
+    for (let i = len; i >= 1; i--) {
+      sum += Number(c[len - i]) * pos--;
+      if (pos < 2) pos = 9;
+    }
+    const mod = sum % 11;
+    return mod < 2 ? 0 : 11 - mod;
+  };
+  return digit(12) === Number(c[12]) && digit(13) === Number(c[13]);
+}
+
+export function formatPhone(value: string) {
+  const d = onlyDigits(value).slice(0, 11);
+  if (d.length < 11) {
+    return d.replace(/^(\d{2})(\d)/, "($1) $2").replace(/(\d{4})(\d)/, "$1-$2");
+  }
+  return d.replace(/^(\d{2})(\d)/, "($1) $2").replace(/(\d{5})(\d)/, "$1-$2");
+}
+
+export function formatCep(value: string) {
+  return onlyDigits(value).slice(0, 8).replace(/^(\d{5})(\d)/, "$1-$2");
+}
+
 export const DEMO_COMPANIES: CompanyInfo[] = [
   { slug: "sabor-da-casa", name: "Sabor da Casa", rid: "rest-sabor-da-casa" },
   { slug: "demo", name: "Casa Demo", rid: "demo-rest-1" },
@@ -244,6 +301,34 @@ export function seedFor(slug: string): Snapshot {
   return {
     ...base,
     rid: info.rid,
+  };
+}
+
+export function seedCompany(info: RegisteredCompany): Snapshot {
+  const base = seedFor(info.slug);
+  const ownerName = info.ownerName.trim();
+  const ownerEmail = info.ownerEmail.trim().toLowerCase();
+  return {
+    ...base,
+    rid: `rest-${info.slug}`,
+    cart: [],
+    selTable: 1,
+    tab: null,
+    user: null,
+    seq: 100,
+    users: [
+      {
+        id: "u1",
+        name: ownerName,
+        email: ownerEmail,
+        role: "manager",
+        active: true,
+      },
+    ],
+    tables: base.tables.map((t) => ({ ...t, st: "free" as const, w: null })),
+    orders: [],
+    pays: [],
+    audit: [{ t: Date.now(), u: ownerName, a: `Empresa ${info.name.trim()} cadastrada` }],
   };
 }
 
@@ -342,11 +427,11 @@ export const PERM_LABEL: Record<string, string> = {
 
 export const PAY_METHODS = ["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito"] as const;
 
-export const ST: Record<OrderStatus, string> = {
-  sent: "Enviado",
-  preparing: "Preparando",
-  ready: "Pronto",
-  delivered: "Entregue",
+export const ST: Record<OrderStatus, [string, "wait" | "ok" | "neutral"]> = {
+  sent: ["Recebido", "wait"],
+  preparing: ["Em preparo", "neutral"],
+  ready: ["Pronto", "wait"],
+  delivered: ["Entregue", "ok"],
 };
 
 export const TS: Record<TableStatus, string> = {
@@ -446,11 +531,34 @@ export function paid(s: Snapshot, n: number) {
     .reduce((sum, p) => sum + p.amount, 0);
 }
 
+export type AlertOwner = "kitchen" | "waiter" | "cashier" | "manager";
+
 export interface Alert {
   k: "d" | "w";
   tab?: TabId;
   t: string;
   a: string;
+  owner: AlertOwner;
+  staffId?: string;
+  who?: string;
+}
+
+export function blockedBy(stock: StockItem[], item: MenuItem): string | null {
+  for (const [sid, qty] of Object.entries(item.rec)) {
+    if (!(qty > 0)) continue;
+    const row = stock.find((x) => x.id === sid);
+    if (!row) continue;
+    if (row.q + 1e-6 < qty) return row.name;
+  }
+  return null;
+}
+
+export function canSell(stock: StockItem[], item: MenuItem) {
+  return item.ok && !blockedBy(stock, item);
+}
+
+export function offNames(menu: MenuItem[], stock: StockItem[]) {
+  return menu.filter((m) => m.ok && blockedBy(stock, m)).map((m) => m.name);
 }
 
 export function pulse(s: Snapshot, now = Date.now()): Alert[] {
@@ -458,17 +566,23 @@ export function pulse(s: Snapshot, now = Date.now()): Alert[] {
   const c = s.cfg;
   for (const o of s.orders) {
     if (o.closed) continue;
+    const waiter = who(s, o.w);
     if (o.st === "preparing" && o.tp && mins(o.tp, now) > c.prep) {
       alerts.push({
         k: "d",
         tab: "kds",
+        owner: "kitchen",
+        who: "Cozinha",
         t: `Pedido #${o.n} está em preparação há ${mins(o.tp, now)} min. Esperado: ${c.prep} min.`,
-        a: "Verifique com a cozinha.",
+        a: "A cozinha precisa tirar esse pedido do fogo ou avisar o salão.",
       });
     }
     if (o.st === "sent" && mins(o.t0, now) > c.wait) {
       alerts.push({
         k: "w",
+        tab: "kds",
+        owner: "kitchen",
+        who: "Cozinha",
         t: `Pedido #${o.n} aguarda a cozinha há ${mins(o.t0, now)} min.`,
         a: "Cozinha deve iniciar o preparo.",
       });
@@ -476,8 +590,12 @@ export function pulse(s: Snapshot, now = Date.now()): Alert[] {
     if (o.st === "ready" && o.tr && mins(o.tr, now) >= c.wait) {
       alerts.push({
         k: "w",
+        tab: "orders",
+        owner: "waiter",
+        staffId: o.w,
+        who: waiter,
         t: `Pedido #${o.n} está pronto há ${mins(o.tr, now)} min sem entrega.`,
-        a: "Garçom deve retirar e entregar.",
+        a: `${waiter} deve retirar e entregar na mesa ${o.table}.`,
       });
     }
   }
@@ -485,6 +603,9 @@ export function pulse(s: Snapshot, now = Date.now()): Alert[] {
   if (queued >= 3) {
     alerts.push({
       k: "w",
+      tab: "kds",
+      owner: "kitchen",
+      who: "Cozinha",
       t: `A cozinha tem ${queued} pedidos aguardando preparo.`,
       a: "Reforce a equipe.",
     });
@@ -494,6 +615,8 @@ export function pulse(s: Snapshot, now = Date.now()): Alert[] {
       alerts.push({
         k: "w",
         tab: "caixa",
+        owner: "cashier",
+        who: "Caixa",
         t: `Mesa ${t.n} aguarda fechamento da conta.`,
         a: "Registre o pagamento no Caixa.",
       });
@@ -501,15 +624,55 @@ export function pulse(s: Snapshot, now = Date.now()): Alert[] {
   }
   for (const item of s.stock) {
     if (item.q > item.min) continue;
-    const hit = s.menu.filter((m) => m.rec[item.id]).map((m) => m.name);
+    const hit = s.menu.filter((m) => m.ok && m.rec[item.id]).map((m) => m.name);
+    const gone = s.menu.filter((m) => m.ok && blockedBy(s.stock, m) === item.name).map((m) => m.name);
     alerts.push({
       k: item.q ? "w" : "d",
       tab: "stock",
+      owner: "manager",
+      who: "Gerência",
       t: `Estoque baixo: ${item.name}. Atual: ${item.q} ${item.u}. Mínimo: ${item.min} ${item.u}.`,
-      a: hit.length ? `Pode afetar: ${hit.join(", ")}.` : "Registre uma entrada.",
+      a: gone.length ? `Fora do salão agora: ${gone.join(", ")}.` : hit.length ? `Pode afetar: ${hit.join(", ")}.` : "Registre uma entrada.",
     });
   }
   return alerts;
+}
+
+export function forRole(list: Alert[], user: Staff | null) {
+  if (!user) return [];
+  if (user.role === "manager") return list;
+  if (user.role === "kitchen") return list.filter((a) => a.owner === "kitchen");
+  return list.filter((a) => a.owner === "waiter" && (!a.staffId || a.staffId === user.id));
+}
+
+export function closeout(s: Snapshot, now = Date.now()) {
+  const delivered = s.orders.filter((o) => o.st === "delivered");
+  const sold = delivered.reduce((sum, o) => sum + tot(s, o), 0);
+  const received = s.pays.filter((p) => p.st === "confirmed").reduce((sum, p) => sum + p.amount, 0);
+  const open = s.tables
+    .filter((t) => t.st !== "free")
+    .reduce((sum, t) => sum + Math.max(0, +(cons(s, t.n) - paid(s, t.n)).toFixed(2)), 0);
+  const late: { t: string; who: string }[] = [];
+  for (const o of s.orders) {
+    if (o.tp && o.tr && (o.tr - o.tp) / MIN > s.cfg.prep) {
+      late.push({ t: `Pedido #${o.n} levou ${Math.round((o.tr - o.tp) / MIN)} min no preparo`, who: "Cozinha" });
+    } else if (!o.closed && o.st === "preparing" && o.tp && mins(o.tp, now) > s.cfg.prep) {
+      late.push({ t: `Pedido #${o.n} ainda no preparo há ${mins(o.tp, now)} min`, who: "Cozinha" });
+    }
+    if (o.tr && o.td && mins(o.tr, o.td) >= s.cfg.wait) {
+      late.push({ t: `Pedido #${o.n} esperou ${mins(o.tr, o.td)} min no passe`, who: who(s, o.w) });
+    } else if (!o.closed && o.st === "ready" && o.tr && mins(o.tr, now) >= s.cfg.wait) {
+      late.push({ t: `Pedido #${o.n} pronto há ${mins(o.tr, now)} min`, who: who(s, o.w) });
+    }
+    if (!o.closed && o.st === "sent" && mins(o.t0, now) > s.cfg.wait) {
+      late.push({ t: `Pedido #${o.n} sem início há ${mins(o.t0, now)} min`, who: "Cozinha" });
+    }
+  }
+  const nobaixa = s.orders.filter((o) => (o.st === "preparing" || o.st === "ready" || o.st === "delivered") && !o.ded);
+  const blocked = s.menu
+    .filter((m) => m.ok && blockedBy(s.stock, m))
+    .map((m) => ({ name: m.name, why: blockedBy(s.stock, m) ?? "insumo", price: m.p }));
+  return { sold, received, open, late, nobaixa, blocked };
 }
 
 export function stats(s: Snapshot) {

@@ -3,9 +3,9 @@ import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Audit, Caixa, Dash, MenuAdm, Pulse, Stock, Team } from "./office";
 import { Kds, NewOrder, Orders, Tables } from "./floor";
-import { NEED, ROLES, brl, can, primaryFor, tabsFor, type TabId } from "./model";
+import { NEED, ROLES, brl, can, formatCep, formatCnpj, formatPhone, primaryFor, tabsFor, type RegisteredCompany, type TabId } from "./model";
 import { NowProvider } from "./now";
-import { useCheffar } from "./store";
+import { listCompanies, registerCompany, useCheffar } from "./store";
 import { Btn, C, Field, Input } from "./ui";
 
 export function CheffarApp() {
@@ -63,11 +63,36 @@ function Gate() {
 
 function CompanySelector() {
   const setCompany = useCheffar((s) => s.setCompany);
+  const [mode, setMode] = useState<"enter" | "create">("enter");
+  const [companies, setCompanies] = useState<RegisteredCompany[]>([]);
   const [code, setCode] = useState("");
+  const [legalName, setLegalName] = useState("");
+  const [name, setName] = useState("");
+  const [cnpj, setCnpj] = useState("");
+  const [phone, setPhone] = useState("");
+  const [zip, setZip] = useState("");
+  const [street, setStreet] = useState("");
+  const [number, setNumber] = useState("");
+  const [district, setDistrict] = useState("");
+  const [city, setCity] = useState("");
+  const [stateUf, setStateUf] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const submit = async () => {
+  useEffect(() => {
+    void listCompanies().then(setCompanies);
+  }, []);
+
+  const open = async (slug: string) => {
+    await setCompany(slug);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.history.pushState({}, "", `/empresa/${slug}`);
+    }
+  };
+
+  const submitEnter = async () => {
     const slug = code.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
     if (slug.length < 2) {
       setError("Informe um código válido (ex.: sabor-da-casa).");
@@ -76,12 +101,41 @@ function CompanySelector() {
     setBusy(true);
     setError("");
     try {
-      await setCompany(slug);
-      if (Platform.OS === "web" && typeof window !== "undefined") {
-        window.history.pushState({}, "", `/empresa/${slug}`);
-      }
+      await open(slug);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Não foi possível abrir a empresa.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCreate = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const err = await registerCompany({
+        slug: code,
+        name,
+        legalName,
+        cnpj,
+        phone,
+        zip,
+        street,
+        number,
+        district,
+        city,
+        state: stateUf,
+        ownerName,
+        ownerEmail,
+      });
+      if (err) {
+        setError(err);
+        return;
+      }
+      const slug = code.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+      await open(slug);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível cadastrar a empresa.");
     } finally {
       setBusy(false);
     }
@@ -91,28 +145,121 @@ function CompanySelector() {
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
         <Text style={styles.kicker}>Cheffar</Text>
-        <Text style={styles.brand}>Qual restaurante?</Text>
-        <Text style={styles.muted}>Informe o código da empresa</Text>
+        <Text style={styles.brand}>{mode === "create" ? "Nova empresa" : "Qual restaurante?"}</Text>
+        <Text style={styles.muted}>
+          {mode === "create" ? "Dados da empresa e do responsável" : "Informe o código da empresa"}
+        </Text>
 
         <View style={styles.form}>
+          {mode === "create" ? (
+            <>
+              <Field label="Razão social">
+                <Input placeholder="Pizzaria do Zé LTDA" value={legalName} onChangeText={setLegalName} />
+              </Field>
+              <Field label="Nome fantasia">
+                <Input placeholder="Pizzaria do Zé" value={name} onChangeText={setName} />
+              </Field>
+              <Field label="CNPJ">
+                <Input
+                  keyboardType="number-pad"
+                  placeholder="00.000.000/0000-00"
+                  value={cnpj}
+                  onChangeText={(v) => setCnpj(formatCnpj(v))}
+                />
+              </Field>
+              <Field label="Telefone">
+                <Input
+                  keyboardType="phone-pad"
+                  placeholder="(82) 99999-0000"
+                  value={phone}
+                  onChangeText={(v) => setPhone(formatPhone(v))}
+                />
+              </Field>
+              <Field label="CEP">
+                <Input keyboardType="number-pad" placeholder="57000-000" value={zip} onChangeText={(v) => setZip(formatCep(v))} />
+              </Field>
+              <Field label="Endereço">
+                <Input placeholder="Rua das Acácias" value={street} onChangeText={setStreet} />
+              </Field>
+              <Field label="Número">
+                <Input placeholder="120" value={number} onChangeText={setNumber} />
+              </Field>
+              <Field label="Bairro">
+                <Input placeholder="Ponta Verde" value={district} onChangeText={setDistrict} />
+              </Field>
+              <Field label="Cidade">
+                <Input placeholder="Maceió" value={city} onChangeText={setCity} />
+              </Field>
+              <Field label="UF">
+                <Input autoCapitalize="characters" maxLength={2} placeholder="AL" value={stateUf} onChangeText={setStateUf} />
+              </Field>
+            </>
+          ) : null}
           <Field label="Código da empresa">
             <Input
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="sabor-da-casa"
+              placeholder="pizzaria-do-ze"
               value={code}
               onChangeText={setCode}
             />
           </Field>
+          {mode === "create" ? (
+            <>
+              <Field label="Nome do responsável">
+                <Input placeholder="Maria Silva" value={ownerName} onChangeText={setOwnerName} />
+              </Field>
+              <Field label="E-mail do responsável">
+                <Input
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  placeholder="maria@pizzaria.com"
+                  value={ownerEmail}
+                  onChangeText={setOwnerEmail}
+                />
+              </Field>
+            </>
+          ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Btn tone="primary" onPress={submit} disabled={busy}>
-            {busy ? "Abrindo…" : "Entrar na empresa"}
+          <Btn tone="primary" onPress={mode === "create" ? submitCreate : submitEnter} disabled={busy}>
+            {busy ? "Abrindo…" : mode === "create" ? "Cadastrar empresa" : "Entrar na empresa"}
           </Btn>
+          <Pressable
+            onPress={() => {
+              setMode(mode === "create" ? "enter" : "create");
+              setError("");
+            }}
+          >
+            <Text style={styles.link}>
+              {mode === "create" ? "Já tenho um código" : "Cadastrar empresa"}
+            </Text>
+          </Pressable>
         </View>
 
-        <Text style={[styles.muted, { marginTop: 24 }]}>
-          Exemplos: sabor-da-casa, demo, burger-demo
-        </Text>
+        {mode === "enter" && companies.length ? (
+          <>
+            <Text style={[styles.muted, { marginTop: 24 }]}>Empresas neste aparelho</Text>
+            {companies.map((company) => (
+              <Pressable key={company.slug} style={styles.person} onPress={() => void open(company.slug)}>
+                <View>
+                  <Text style={styles.strong}>{company.name}</Text>
+                  <Text style={styles.muted}>{company.cnpj ? formatCnpj(company.cnpj) : company.slug}</Text>
+                </View>
+                <Text style={styles.link}>Abrir</Text>
+              </Pressable>
+            ))}
+          </>
+        ) : null}
+
+        {mode === "enter" ? (
+          <Text style={[styles.muted, { marginTop: 24 }]}>
+            Demonstração: sabor-da-casa, demo, burger-demo
+          </Text>
+        ) : (
+          <Text style={[styles.muted, { marginTop: 24 }]}>
+            O responsável entra com o e-mail cadastrado e qualquer senha de 4 ou mais caracteres. Cardápio e estoque de exemplo já vêm prontos. A equipe é cadastrada depois.
+          </Text>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -336,6 +483,7 @@ function More({ extra }: { extra: [TabId, string][] }) {
   const go = useCheffar((s) => s.go);
   const setModal = useCheffar((s) => s.setModal);
   const resetDemo = useCheffar((s) => s.resetDemo);
+  const leaveCompany = useCheffar((s) => s.leaveCompany);
   const logout = useCheffar((s) => s.logout);
   return (
     <Sheet title="Mais" onClose={() => setModal(null)}>
@@ -346,6 +494,18 @@ function More({ extra }: { extra: [TabId, string][] }) {
       ))}
       <View style={styles.moreBtn}>
         <Btn onPress={resetDemo}>Reiniciar demonstração</Btn>
+      </View>
+      <View style={styles.moreBtn}>
+        <Btn
+          onPress={() => {
+            leaveCompany();
+            if (Platform.OS === "web" && typeof window !== "undefined") {
+              window.history.pushState({}, "", "/");
+            }
+          }}
+        >
+          Trocar restaurante
+        </Btn>
       </View>
       <View style={styles.moreBtn}>
         <Btn onPress={logout}>Sair</Btn>

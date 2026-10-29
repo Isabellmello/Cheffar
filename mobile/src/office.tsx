@@ -7,18 +7,28 @@ import {
   ROLES,
   brl,
   can,
+  closeout,
   cons,
   openOrders,
   paid,
   permsOf,
   pulse,
   stats,
+  blockedBy,
   type Alert,
+  type AlertOwner,
   type Role,
 } from "./model";
 import { useNow } from "./now";
 import { useCheffar } from "./store";
 import { Badge, Btn, C, Chip, Empty, Field, Input, Panel, SectionLabel, Title } from "./ui";
+
+const OWNER: Record<AlertOwner, string> = {
+  kitchen: "Cozinha",
+  waiter: "Garçom",
+  cashier: "Caixa",
+  manager: "Gerência",
+};
 
 export function Alerts({ list }: { list: Alert[] }) {
   const go = useCheffar((s) => s.go);
@@ -30,6 +40,10 @@ export function Alerts({ list }: { list: Alert[] }) {
         <Panel key={`${alert.t}-${i}`}>
           <Badge tone={alert.k === "d" ? "d" : "w"}>{alert.k === "d" ? "Crítico" : "Atenção"}</Badge>
           <Text style={styles.body}>{alert.t}</Text>
+          <Text style={styles.meta}>
+            {OWNER[alert.owner]}
+            {alert.who ? ` · ${alert.who}` : ""}
+          </Text>
           <Text style={styles.meta}>{alert.a}</Text>
           {alert.tab && can(user, NEED[alert.tab]) ? (
             <View style={styles.gap}>
@@ -47,15 +61,18 @@ export function Dash() {
   const now = useNow();
   const s = stats(snap);
   const alerts = pulse(snap, now);
+  const day = closeout(snap, now);
   const busy = snap.tables.filter((t) => t.st !== "free").length;
   return (
     <View>
-      <Title kicker="Casa Demo" title="Painel" />
+      <Title kicker={snap.companyName} title="Painel" />
       <View style={styles.grid}>
         <Kpi value={String(s.act)} label="Pedidos em andamento" />
         <Kpi value={`${busy}/${snap.tables.length}`} label="Mesas ocupadas" />
         <Kpi value={s.ticket == null ? "—" : brl(s.ticket)} label="Ticket médio entregue" />
         <Kpi value={String(alerts.length)} label="Alertas ativos" />
+        <Kpi value={brl(day.open)} label="Em aberto nas mesas" />
+        <Kpi value={String(day.late.length)} label="Atrasos do turno" />
       </View>
       <SectionLabel>Atenção agora</SectionLabel>
       <Alerts list={alerts.slice(0, 3)} />
@@ -94,8 +111,7 @@ export function Pulse() {
       </Panel>
       <SectionLabel>Alertas</SectionLabel>
       <Alerts list={pulse(snap, now)} />
-      <SectionLabel>Movimento</SectionLabel>
-      <Empty>Ainda não há histórico suficiente para prever horários de pico. O Pulse precisa acumular pedidos de vários dias.</Empty>
+      <ShiftClose />
       <SectionLabel>Metas de tempo</SectionLabel>
       <Panel>
         <Field label="Preparo esperado (min)">
@@ -107,6 +123,56 @@ export function Pulse() {
         <Btn tone="primary" onPress={() => saveCfg(+prep, +wait)}>
           Salvar metas
         </Btn>
+      </Panel>
+    </View>
+  );
+}
+
+function ShiftClose() {
+  const snap = useCheffar();
+  const now = useNow();
+  const day = closeout(snap, now);
+  return (
+    <View>
+      <SectionLabel>Fechamento do turno</SectionLabel>
+      <Panel>
+        <Text style={styles.kicker}>Dinheiro</Text>
+        <Sum label="Vendido (entregue)" value={brl(day.sold)} strong />
+        <Sum label="Recebido" value={brl(day.received)} />
+        <Sum label="Em aberto" value={brl(day.open)} strong />
+      </Panel>
+      <Panel>
+        <Text style={styles.kicker}>Comida</Text>
+        {day.blocked.length ? (
+          day.blocked.map((item) => (
+            <Text key={item.name} style={styles.body}>
+              {item.name} saiu do salão · falta {item.why} · {brl(item.price)}
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.meta}>Nenhum prato ativo está sem insumo.</Text>
+        )}
+        {day.nobaixa.length ? (
+          day.nobaixa.map((o) => (
+            <Text key={o.id} style={styles.gold}>
+              Pedido #{o.n} seguiu sem baixa de estoque.
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.meta}>Toda baixa de ficha técnica foi registrada.</Text>
+        )}
+      </Panel>
+      <Panel>
+        <Text style={styles.kicker}>Tempo</Text>
+        {day.late.length ? (
+          day.late.map((row, i) => (
+            <Text key={`${row.t}-${i}`} style={styles.body}>
+              {row.t} · {row.who}
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.meta}>Nenhum pedido furou a meta neste turno.</Text>
+        )}
       </Panel>
     </View>
   );
@@ -291,43 +357,46 @@ export function Stock() {
 }
 
 export function MenuAdm() {
-  const menu = useCheffar((s) => s.menu);
+  const snap = useCheffar();
   const setPrice = useCheffar((s) => s.setPrice);
   const toggleMenu = useCheffar((s) => s.toggleMenu);
   const ping = useCheffar((s) => s.ping);
   return (
     <View>
-      <Title kicker="Casa Demo" title="Cardápio" />
-      {menu.map((item) => (
-        <Panel key={item.id}>
-          <View style={styles.row}>
-            <View style={styles.flex}>
-              <Text style={styles.strong}>{item.name}</Text>
-              <Text style={styles.meta}>{item.cat}</Text>
+      <Title kicker={snap.companyName} title="Cardápio" />
+      {snap.menu.map((item) => {
+        const why = item.ok ? blockedBy(snap.stock, item) : null;
+        return (
+          <Panel key={item.id}>
+            <View style={styles.row}>
+              <View style={styles.flex}>
+                <Text style={styles.strong}>{item.name}</Text>
+                <Text style={styles.meta}>{item.cat}</Text>
+              </View>
+              <Badge tone={!item.ok || why ? "d" : "ok"}>{!item.ok ? "Fora" : why ? `Sem ${why}` : "No salão"}</Badge>
             </View>
-            <Badge tone={item.ok ? "ok" : "d"}>{item.ok ? "No salão" : "Fora"}</Badge>
-          </View>
-          <Field label="Preço">
-            <Input
-              keyboardType="decimal-pad"
-              accessibilityLabel={`Preço de ${item.name}`}
-              defaultValue={String(item.p)}
-              key={`${item.id}-${item.p}`}
-              onEndEditing={(e) => {
-                const v = +e.nativeEvent.text;
-                if (!(v > 0)) {
-                  ping("Preço deve ser maior que zero.");
-                  return;
-                }
-                setPrice(item.id, v);
-              }}
-            />
-          </Field>
-          <Btn tone={item.ok ? "ghost" : "primary"} onPress={() => toggleMenu(item.id)}>
-            {item.ok ? "Marcar indisponível" : "Marcar disponível"}
-          </Btn>
-        </Panel>
-      ))}
+            <Field label="Preço">
+              <Input
+                keyboardType="decimal-pad"
+                accessibilityLabel={`Preço de ${item.name}`}
+                defaultValue={String(item.p)}
+                key={`${item.id}-${item.p}`}
+                onEndEditing={(e) => {
+                  const v = +e.nativeEvent.text;
+                  if (!(v > 0)) {
+                    ping("Preço deve ser maior que zero.");
+                    return;
+                  }
+                  setPrice(item.id, v);
+                }}
+              />
+            </Field>
+            <Btn tone={item.ok ? "ghost" : "primary"} onPress={() => toggleMenu(item.id)}>
+              {item.ok ? "Marcar indisponível" : "Marcar disponível"}
+            </Btn>
+          </Panel>
+        );
+      })}
     </View>
   );
 }

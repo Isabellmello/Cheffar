@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { ST, TS, brl, can, cons, mins, tot, who, type OrderStatus } from "./model";
+import { ST, TS, blockedBy, brl, can, cons, forRole, mins, pulse, tot, who, type OrderStatus } from "./model";
 import { useNow } from "./now";
 import { useCheffar } from "./store";
 import { Badge, Btn, C, Chip, Empty, Input, Panel, Title } from "./ui";
@@ -82,20 +82,24 @@ export function NewOrder() {
           <Chip key={cat} label={cat} on={snap.cat === cat} onPress={() => setCat(cat)} />
         ))}
       </ScrollView>
-      {visible.map((item) => (
-        <Panel key={item.id} style={styles.rowBetween}>
-          <View style={styles.flex}>
-            <Text style={styles.strong}>{item.name}</Text>
-            <Text style={styles.meta}>
-              {brl(item.p)}
-              {item.ok ? "" : " · Indisponível"}
-            </Text>
-          </View>
-          <Btn tone="primary" disabled={!item.ok} onPress={() => addToCart(item.id)}>
-            Adicionar
-          </Btn>
-        </Panel>
-      ))}
+      {visible.map((item) => {
+        const why = item.ok ? blockedBy(snap.stock, item) : null;
+        const sell = item.ok && !why;
+        return (
+          <Panel key={item.id} style={styles.rowBetween}>
+            <View style={styles.flex}>
+              <Text style={styles.strong}>{item.name}</Text>
+              <Text style={styles.meta}>
+                {brl(item.p)}
+                {why ? ` · Sem ${why}` : item.ok ? "" : " · Indisponível"}
+              </Text>
+            </View>
+            <Btn tone="primary" disabled={!sell} onPress={() => addToCart(item.id)}>
+              Adicionar
+            </Btn>
+          </Panel>
+        );
+      })}
       <Text style={styles.kicker}>Carrinho</Text>
       {snap.cart.length ? (
         snap.cart.map((item, index) => (
@@ -137,9 +141,16 @@ export function Orders() {
   const now = useNow();
   const setOrderStatus = useCheffar((s) => s.setOrderStatus);
   const list = snap.orders.filter((o) => snap.user?.role === "manager" || o.w === snap.user?.id);
+  const mine = forRole(pulse(snap, now), snap.user);
   return (
     <View>
       <Title kicker="Salão" title="Pedidos" />
+      {mine.slice(0, 2).map((alert) => (
+        <Panel key={alert.t}>
+          <Badge tone={alert.k === "d" ? "d" : "w"}>{alert.who ?? "Você"}</Badge>
+          <Text style={styles.body}>{alert.t}</Text>
+        </Panel>
+      ))}
       {list.length ? (
         list
           .slice()
@@ -188,9 +199,16 @@ export function Kds() {
   const setOrderStatus = useCheffar((s) => s.setOrderStatus);
   const [col, setCol] = useState<OrderStatus>("sent");
   const list = snap.orders.filter((o) => o.st === col && !o.closed);
+  const mine = forRole(pulse(snap, now), snap.user);
   return (
     <View>
       <Title kicker="Pass" title="Cozinha" />
+      {mine.slice(0, 2).map((alert) => (
+        <Panel key={alert.t} style={styles.late}>
+          <Badge tone="d">Seu atraso</Badge>
+          <Text style={styles.body}>{alert.t}</Text>
+        </Panel>
+      ))}
       <View style={styles.cols}>
         {COLS.map((column) => {
           const count = snap.orders.filter((o) => o.st === column.st && !o.closed).length;

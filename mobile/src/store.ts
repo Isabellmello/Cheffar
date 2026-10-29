@@ -5,13 +5,20 @@ import {
   can,
   companyFromSlug,
   firstTab,
+  offNames,
+  canSell,
   seed,
+  seedCompany,
   seedFor,
   sleep,
+  cnpjOk,
+  onlyDigits,
+  DEMO_COMPANIES,
   type CartLine,
   type ModalKind,
   type OrderStatus,
   type PayStatus,
+  type RegisteredCompany,
   type Role,
   type Snapshot,
   type TabId,
@@ -24,6 +31,7 @@ export interface Cheffar extends Snapshot {
   companySlug: string | null;
   companyName: string;
   setCompany: (slug: string) => Promise<void>;
+  leaveCompany: () => void;
   login: (email: string) => Promise<void>;
   logout: () => void;
   go: (tab: TabId) => void;
@@ -51,6 +59,92 @@ export interface Cheffar extends Snapshot {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+const REGISTRY_KEY = "cheffar-companies-v1";
+
+export async function listCompanies(): Promise<RegisteredCompany[]> {
+  const raw = await AsyncStorage.getItem(REGISTRY_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as RegisteredCompany[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function registerCompany(input: RegisteredCompany): Promise<string | null> {
+  const slug = input.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+  const name = input.name.trim();
+  const legalName = input.legalName.trim();
+  const cnpj = onlyDigits(input.cnpj);
+  const phone = onlyDigits(input.phone);
+  const zip = onlyDigits(input.zip);
+  const street = input.street.trim();
+  const number = input.number.trim();
+  const district = input.district.trim();
+  const city = input.city.trim();
+  const state = input.state.trim().toUpperCase();
+  const ownerName = input.ownerName.trim();
+  const ownerEmail = input.ownerEmail.trim().toLowerCase();
+  if (legalName.length < 3) return "Informe a razão social.";
+  if (name.length < 2) return "Informe o nome fantasia.";
+  if (!cnpjOk(cnpj)) return "Informe um CNPJ válido.";
+  if (phone.length < 10) return "Informe um telefone com DDD.";
+  if (zip.length !== 8) return "Informe um CEP válido.";
+  if (street.length < 3 || !number) return "Informe o endereço e o número.";
+  if (district.length < 2 || city.length < 2) return "Informe bairro e cidade.";
+  if (!/^[A-Z]{2}$/.test(state)) return "Informe a UF com 2 letras.";
+  if (slug.length < 2) return "O código precisa ter pelo menos 2 caracteres (letras, números ou hífen).";
+  if (ownerName.length < 3) return "Informe o nome do responsável.";
+  if (!/^\S+@\S+\.\S+$/.test(ownerEmail)) return "Informe um e-mail válido.";
+  if (DEMO_COMPANIES.some((c) => c.slug === slug)) return "Esse código já é de uma casa de demonstração.";
+  const registry = await listCompanies();
+  if (registry.some((c) => c.slug === slug)) return "Já existe uma empresa com esse código.";
+  if (registry.some((c) => onlyDigits(c.cnpj || "") === cnpj)) return "Já existe uma empresa com esse CNPJ.";
+  const record: RegisteredCompany = {
+    slug,
+    name,
+    legalName,
+    cnpj,
+    phone,
+    zip,
+    street,
+    number,
+    district,
+    city,
+    state,
+    ownerName,
+    ownerEmail,
+  };
+  const snapshot = seedCompany(record);
+  const persisted = {
+    state: {
+      rid: snapshot.rid,
+      cfg: snapshot.cfg,
+      cart: snapshot.cart,
+      selTable: snapshot.selTable,
+      cat: snapshot.cat,
+      tab: snapshot.tab,
+      user: snapshot.user,
+      seq: snapshot.seq,
+      users: snapshot.users,
+      tables: snapshot.tables,
+      stock: snapshot.stock,
+      menu: snapshot.menu,
+      orders: snapshot.orders,
+      pays: snapshot.pays,
+      audit: snapshot.audit,
+      payKey: `${Date.now()}`,
+      companySlug: slug,
+      companyName: name,
+    },
+    version: 0,
+  };
+  await AsyncStorage.setItem(`cheffar-${slug}-v1`, JSON.stringify(persisted));
+  await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify([...registry, record]));
+  return null;
+}
 
 function stamp(s: Snapshot, a: string) {
   return [{ t: Date.now(), u: s.user?.name || "sistema", a }, ...s.audit].slice(0, 80);
@@ -82,7 +176,11 @@ export const useCheffar = create<Cheffar>()(
         setCat: (cat) => set({ cat }),
         selectTable: (n) => set({ selTable: n }),
         setCompany: async (slug: string) => {
-          const info = companyFromSlug(slug);
+          const clean = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+          const registered = (await listCompanies()).find((c) => c.slug === clean);
+          const info = registered
+            ? { slug: registered.slug, name: registered.name, rid: `rest-${registered.slug}` }
+            : companyFromSlug(clean);
           const storageName = `cheffar-${info.slug}-v1`;
 
           useCheffar.persist.setOptions({ name: storageName });
@@ -90,7 +188,7 @@ export const useCheffar = create<Cheffar>()(
 
           const current = get();
           if (current.rid !== info.rid) {
-            const seeded = seedFor(info.slug);
+            const seeded = registered ? seedCompany(registered) : seedFor(info.slug);
             set({
               ...seeded,
               companySlug: info.slug,
@@ -107,6 +205,15 @@ export const useCheffar = create<Cheffar>()(
             });
           }
         },
+        leaveCompany: () =>
+          set({
+            user: null,
+            companySlug: null,
+            cart: [],
+            modal: null,
+            tab: null,
+            toast: "",
+          }),
         logout: () => set({ user: null, cart: [], modal: null, tab: null, toast: "" }),
         login: async (email) => {
           await sleep(400);
@@ -121,16 +228,20 @@ export const useCheffar = create<Cheffar>()(
           }));
         },
         addToCart: (mid) => {
-          const item = get().menu.find((m) => m.id === mid);
-          if (!item?.ok) return;
-          set((s) => {
-            const idx = s.cart.findIndex((c) => c.mid === item.id && !c.note);
+          const s = get();
+          const item = s.menu.find((m) => m.id === mid);
+          if (!item || !canSell(s.stock, item)) {
+            ping(item && !item.ok ? "Item fora do cardápio." : `Sem estoque para servir ${item?.name ?? "este item"}.`);
+            return;
+          }
+          set((cur) => {
+            const idx = cur.cart.findIndex((c) => c.mid === item.id && !c.note);
             if (idx >= 0) {
-              const cart = s.cart.map((c, i) => (i === idx ? { ...c, q: c.q + 1 } : c));
+              const cart = cur.cart.map((c, i) => (i === idx ? { ...c, q: c.q + 1 } : c));
               return { cart };
             }
             const line: CartLine = { mid: item.id, name: item.name, p: item.p, q: 1, note: "" };
-            return { cart: [...s.cart, line] };
+            return { cart: [...cur.cart, line] };
           });
         },
         changeQty: (index, delta) =>
@@ -152,6 +263,14 @@ export const useCheffar = create<Cheffar>()(
         sendOrder: () => {
           const s = get();
           if (!s.cart.length) return;
+          const blocked = s.cart.filter((line) => {
+            const item = s.menu.find((m) => m.id === line.mid);
+            return !item || !canSell(s.stock, item);
+          });
+          if (blocked.length) {
+            ping(`Sem estoque: ${blocked.map((l) => l.name).join(", ")}.`);
+            return;
+          }
           const n = s.seq + 1;
           const order = {
             id: `o${n}`,
@@ -216,6 +335,11 @@ export const useCheffar = create<Cheffar>()(
                 item.q = Math.max(0, +(item.q - delta).toFixed(2));
                 audit = [{ t: now, u: s.user?.name || "sistema", a: `Estoque: ${item.name} −${delta} ${item.u} (pedido #${order.n})` }, ...audit].slice(0, 80);
               }
+            }
+            const before = offNames(s.menu, s.stock);
+            const after = offNames(s.menu, stock);
+            for (const name of after.filter((x) => !before.includes(x))) {
+              audit = [{ t: now, u: s.user?.name || "sistema", a: `Cardápio: ${name} saiu do salão por falta de insumo` }, ...audit].slice(0, 80);
             }
           }
           set({
@@ -312,14 +436,22 @@ export const useCheffar = create<Cheffar>()(
         },
         adjustStock: (id, dir) => {
           if (!guard("stock:write")) return;
-          const item = get().stock.find((x) => x.id === id);
+          const s = get();
+          const item = s.stock.find((x) => x.id === id);
           if (!item) return;
           const next = +(item.q + dir * item.step).toFixed(2);
           if (next < 0) return;
-          set((s) => ({
-            stock: s.stock.map((x) => (x.id === id ? { ...x, q: next } : x)),
-            audit: stamp(s, `Estoque: ${item.name} ${dir > 0 ? "+" : "−"}${item.step} ${item.u}`),
-          }));
+          const stock = s.stock.map((x) => (x.id === id ? { ...x, q: next } : x));
+          const before = offNames(s.menu, s.stock);
+          const after = offNames(s.menu, stock);
+          let audit = stamp(s, `Estoque: ${item.name} ${dir > 0 ? "+" : "−"}${item.step} ${item.u}`);
+          for (const name of after.filter((x) => !before.includes(x))) {
+            audit = [{ t: Date.now(), u: s.user?.name || "sistema", a: `Cardápio: ${name} saiu do salão por falta de ${item.name}` }, ...audit].slice(0, 80);
+          }
+          for (const name of before.filter((x) => !after.includes(x))) {
+            audit = [{ t: Date.now(), u: s.user?.name || "sistema", a: `Cardápio: ${name} voltou ao salão` }, ...audit].slice(0, 80);
+          }
+          set({ stock, audit });
         },
         saveCfg: (prep, wait) => {
           if (!guard("cfg:write")) return;
